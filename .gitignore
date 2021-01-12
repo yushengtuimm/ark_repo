@@ -1,0 +1,4 @@
+ark/gmail/credentials.json
+ark/gmail/token.pickle
+venv
+__pycache__
