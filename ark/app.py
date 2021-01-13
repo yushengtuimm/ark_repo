@@ -63,62 +63,114 @@ def get_child_path(dir):
     return [os.path.join(dir, file) for file in os.listdir(dir)]
 
 
-def read_latest_trade_logs():
-    log_dirs = get_child_path(trade_log_root)
-    log_paths = get_child_path(log_dirs[-1])
-
-    for log in log_paths:
-        with open(log) as csv_file:
-            reader = csv.DictReader(csv_file)
-            return [
-                {
-                    "date": datetime.strptime(row["date"], "%m/%d/%Y"),
-                    "fund": row["fund"],
-                    "company": row["company"],
-                    "ticker": row["ticker"].strip(),
-                    "cusip": row["cusip"],
-                    "shares": float(row["shares"]),
-                    "value": float(row["market value($)"]),
-                    "weight": float(row["weight(%)"]),
-                }
-                for row in reader
-                if row["ticker"]
-            ]
+def get_log_data(log):
+    with open(log) as csv_file:
+        return [
+            {
+                "date": datetime.strptime(row["date"], "%m/%d/%Y"),
+                "fund": row["fund"],
+                "company": row["company"],
+                "ticker": row["ticker"].strip(),
+                "cusip": row["cusip"],
+                "shares": float(row["shares"]),
+                "value": float(row["market value($)"]),
+                "weight": float(row["weight(%)"]),
+            }
+            for row in csv.DictReader(csv_file)
+            if row["ticker"]
+        ]
 
 
 def update_ark_data():
     new_trades = []
-    log_dicts = read_latest_trade_logs()
-    for new in log_dicts:
-        new["ticker"] = ticker_mapping[new["ticker"]] if new["ticker"] in ticker_mapping else new["ticker"]
-        pre = db.ark.holdings.find_one_and_update(
-            {"fund": new["fund"], "ticker": new["ticker"]},
-            {"$set": new},
-            upsert=True,
-        )
+    log_dir = get_child_path(trade_log_root)[-1]
+    for log in get_child_path(log_dir):
+        for item in get_log_data(log):
+            item["ticker"] = ticker_mapping[item["ticker"]] if item["ticker"] in ticker_mapping else item["ticker"]
+            pre = db.ark.holdings.find_one_and_update(
+                {"fund": item["fund"], "ticker": item["ticker"]},
+                {"$set": item},
+                upsert=True,
+            )
 
-        if pre is None:
-            action = "buy"
-            volume = new["shares"]
-        elif new["shares"] == pre["shares"]:
-            continue
-        elif new["shares"] > pre["shares"]:
-            action = "buy"
-            volume = new["shares"] - pre["shares"]
-        else:
-            action = "sell"
-            volume = pre["shares"] - new["shares"]
+            if pre is None:
+                action = "buy"
+                volume = item["shares"]
+            elif item["shares"] == pre["shares"]:
+                continue
+            elif item["shares"] > pre["shares"]:
+                action = "buy"
+                volume = item["shares"] - pre["shares"]
+            else:
+                action = "sell"
+                volume = pre["shares"] - item["shares"]
 
-        trade = {
-            "date": new["date"],
-            "action": action,
-            "fund": new["fund"],
-            "company": new["company"],
-            "ticker": new["ticker"],
-            "volume": volume,
-            "price": new["value"] / new["shares"],
-        }
-        new_trades.append(trade)
+            trade = {
+                "date": item["date"],
+                "action": action,
+                "fund": item["fund"],
+                "company": item["company"],
+                "ticker": item["ticker"],
+                "volume": volume,
+                "price": item["value"] / item["shares"],
+            }
+            new_trades.append(trade)
 
     if len(new_trades) > 0:
-        db.ark.trade.insert_many(new_trades)
+        db.ark.trades.insert_many(new_trades)
+
+
+def full_update():
+    db.ark.holdings.drop()
+    db.ark.trades.drop()
+
+    log_dirs = get_child_path(trade_log_root)
+    new_trades = []
+    for i, dir in enumerate(log_dirs):
+        if i == 0:
+            data = []
+            for log in get_child_path(dir):
+                for item in get_log_data(log):
+                    item["ticker"] = (
+                        ticker_mapping[item["ticker"]] if item["ticker"] in ticker_mapping else item["ticker"]
+                    )
+                    data.append(item)
+            db.ark.holdings.insert_many(data)
+        else:
+            for log in get_child_path(dir):
+                for item in get_log_data(log):
+                    item["ticker"] = (
+                        ticker_mapping[item["ticker"]] if item["ticker"] in ticker_mapping else item["ticker"]
+                    )
+
+                    pre = db.ark.holdings.find_one_and_update(
+                        {"fund": item["fund"], "ticker": item["ticker"]},
+                        {"$set": item},
+                        upsert=True,
+                    )
+
+                    if pre is None:
+                        action = "buy"
+                        volume = item["shares"]
+                    elif item["shares"] == pre["shares"]:
+                        continue
+                    elif item["shares"] > pre["shares"]:
+                        action = "buy"
+                        volume = item["shares"] - pre["shares"]
+                    else:
+                        action = "sell"
+                        volume = pre["shares"] - item["shares"]
+
+                    trade = {
+                        "date": item["date"],
+                        "action": action,
+                        "fund": item["fund"],
+                        "company": item["company"],
+                        "ticker": item["ticker"],
+                        "volume": volume,
+                        "price": item["value"] / item["shares"],
+                    }
+                    new_trades.append(trade)
+
+    if len(new_trades) > 0:
+        db.ark.trades.insert_many(new_trades)
